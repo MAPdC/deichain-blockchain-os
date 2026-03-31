@@ -1,0 +1,28 @@
+# Compiled binaries
+controller
+miner
+validator
+statistics
+txgen
+
+# Object files
+src/*.o
+*.o
+
+# Runtime artifacts
+DEIChain_log.log
+DEIChain_log.txt
+VALIDATOR_PIPE
+VALIDATOR_INPUT
+
+# IDE / editor folders
+.vscode/
+.idea/
+*.swp
+*~
+
+# macOS
+.DS_Store
+
+# Valgrind output
+vgcore.*
