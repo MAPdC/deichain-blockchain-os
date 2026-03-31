@@ -1,200 +1,191 @@
-/*
-Miguel Fernandes | 2023232584
-Miguel Cunha | 2021215610
-*/
+/**
+ * DEIChain — Blockchain Simulation in C
+ *
+ * Authors:
+ * - Miguel Cunha
+ * - Miguel Fernandes
+ *
+ * Course: Operating Systems (2024/2025)
+ * Degree: BSc in Informatics Engineering (LEI)
+ * Institution: University of Coimbra - DEI
+ */
 
 #define _GNU_SOURCE
-#include <stdio.h>      // fprintf, fscanf, fopen, perror, printf
-#include <stdlib.h>     // exit, EXIT_FAILURE
-#include <unistd.h>     // fork, execl, sleep
-#include <sys/types.h>  // pid_t
-#include <sys/wait.h>   // desnecessária
-#include <signal.h>     // desnecessária
-#include <sys/ipc.h>    // ftok
-#include <sys/shm.h>    // desnecessária
-#include <fcntl.h>      // O_CREAT, O_RDWR
-#include <sys/mman.h>   // shm_open, ftruncate, mmap, MAP_SHARED, PROT_READ, PROT_WRITE
-#include <string.h>     // memcpy, strcmp
-#include <errno.h>      // errno, EEXIST
-#include <sys/msg.h>    // msgget
-#include <sys/stat.h>   // 0666
+#include <stdio.h>      
+#include <stdlib.h>     
+#include <unistd.h>     
+#include <sys/types.h> 
+#include <sys/wait.h>   
+#include <signal.h>     
+#include <sys/ipc.h>       
+#include <fcntl.h>      
+#include <sys/mman.h>   
+#include <string.h>     
+#include <errno.h>      
+#include <sys/msg.h>    
+#include <sys/stat.h>
+#include <time.h>
 #include "shared.h"
 #include "logging.h"
 
-// MACROS
-#define CONFIG_FILE "config.cfg"
-#define SHM_CONFIG_NAME "/deichain_config"
-#define SHM_TX_POOL_NAME "/deichain_tx_pool"
-#define SHM_LEDGER_NAME "/deichain_ledger"
-#define VALIDATOR_PIPE "VALIDATOR_PIPE"
-#define KEY_POOL 0x1234                 // desnecessária
-#define KEY_LEDGER 0x5678               // desnecessária
+/*
+ * Configuration and Global State
+ * Macro definitions, fixed parameters, and global variables
+ * shared throughout the controller process.
+ */
+#define CONFIG_FILE         "config.cfg"
+#define SHM_CONFIG_NAME     "/deichain_config"
+#define SHM_TX_POOL_NAME    "/deichain_tx_pool"
+#define SHM_LEDGER_NAME     "/deichain_ledger"
+#define VALIDATOR_PIPE      "VALIDATOR_PIPE"
+#define SCALE_INTERVAL_S    2
 
-Config config;
+static Config config;
+static pid_t miner_pid = -1;
+static pid_t validator_pids[3] = {-1, -1, -1};
+static pid_t statistics_pid = -1;
+static int msgid = -1;
+static volatile sig_atomic_t g_shutdown = 0;
 
-pid_t miner_pid, validator_pid, statistics_pid;
-int msgid;
-
-// Função para imprimir mensagem de erro no config file
-void config_error(const char *msg) {
-    fprintf(stderr, "Erro no ficheiro de configuração: %s\n", msg);
+/*
+ * Configuration Parsing and Validation
+ * Helper functions to extract and validate parameters
+ * from the configuration file (config.cfg).
+ */
+static void config_error(const char *msg) {
+    fprintf(stderr, "Error in the configuration file %s\n", msg);
     exit(EXIT_FAILURE);
 }
 
-// Lê o config file
-void read_config(const char *filename) {
+static void read_config(const char *filename) {
     FILE *file = fopen(filename, "r");
-
-    // Verifica se foi possível abrir o ficheiro
     if (!file) {
-        config_error("Não foi possível abrir o ficheiro.");
+        config_error("The file could not be opened.");
     }
     
-    // Lê os parâmetros
-    if (fscanf(file, "%d %d %d %d", &config.num_miners, &config.tx_pool_size, &config.transactions_per_block, &config.blockchain_blocks) != 4) {
-        log_message("CONTROLLER", "Leu num_miners %d", config.num_miners);
+    if (fscanf(file, "%d %d %d %d", 
+        &config.num_miners, 
+        &config.tx_pool_size, 
+        &config.transactions_per_block, 
+        &config.blockchain_blocks) != 4)
+    {
         fclose(file);
-        config_error("Formato inválido. Esperado: 4 inteiros.");
+        config_error("Invalid format. Expected: 4 integers.");
     }
-
     config.active_validators = 0;
-
     fclose(file);
     
-    // Validações dos parâmetros
     if (config.num_miners < 1)
-        config_error("NUM_MINERS deve ser ≥ 1.");
+        config_error("NUM_MINERS must be ≥ 1.");
     if (config.tx_pool_size < 1)
-        config_error("TX_POOL_SIZE deve ser ≥ 1.");
+        config_error("TX_POOL_SIZE must be ≥ 1.");
     if (config.transactions_per_block < 1)
-        config_error("TRANSACTIONS_PER_BLOCK deve ser ≥ 1.");
+        config_error("TRANSACTIONS_PER_BLOCK must be ≥ 1.");
     if (config.blockchain_blocks < 1)
-        config_error("BLOCKCHAIN_BLOCKS deve ser ≥ 1.");
+        config_error("BLOCKCHAIN_BLOCKS must be ≥ 1.");
     if (config.transactions_per_block > config.tx_pool_size)
-        config_error("TRANSACTIONS_PER_BLOCK não pode ser maior que TX_POOL_SIZE.");
+        config_error("TRANSACTIONS_PER_BLOCK cannot be greater than TX_POOL_SIZE.");
 }
 
-// Adicionar config a shm
-void create_shared_config() {
-    size_t size = sizeof(Config);
+/*
+ * IPC and Shared Memory Initialization
+ * Creation and formatting of shared memory segments (shm),
+ * semaphores, named pipes, and message queues.
+ */
+static void create_shared_config(void) {
 
-    // Criar objeto de memória compartilhada
-    int shm_fd = shm_open(SHM_CONFIG_NAME, O_CREAT | O_RDWR, 0666);
-    if (shm_fd == -1) {
+    int fd = shm_open(SHM_CONFIG_NAME, O_CREAT | O_RDWR, 0666);
+    if (fd == -1) {
         perror("shm_open config");
         exit(EXIT_FAILURE);
     }
 
-    // Definir o tamanho
-    if (ftruncate(shm_fd, size) == -1) {
+    if (ftruncate(fd, sizeof(config)) == -1) {
         perror("ftruncate config");
         exit(EXIT_FAILURE);
     }
 
-    // Mapear na memória
-    shared_config = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    shared_config = mmap(NULL, sizeof(config), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
     if (shared_config == MAP_FAILED) {
         perror("mmap config");
         exit(EXIT_FAILURE);
     }
 
+    memcpy(shared_config, &config, sizeof(config));
     if(sem_init(&shared_config->config_sem, 1, 1) == -1) {
         perror("sem_init config_sem");
         exit(EXIT_FAILURE);
     }
-
-    // Copiar os dados
-    memcpy(shared_config, &config, size);
-    close(shm_fd);
 }
 
+static void create_transaction_pool(void) {
 
-// Inicializar as shared memories
-TransactionPool *create_transaction_pool() {
-    if (shared_config == NULL) {
-        perror("shared_config não inicializado");
-        exit(EXIT_FAILURE);
-    }
+    size_t size = sizeof(TransactionPool) + sizeof(Transaction) * shared_config->tx_pool_size;
 
-    int tx_pool_size = shared_config->tx_pool_size;
-    size_t size = sizeof(TransactionPool) + sizeof(Transaction) * tx_pool_size;
-
-    // Criar objeto de memória compartilhada
-    int shm_fd = shm_open(SHM_TX_POOL_NAME, O_CREAT | O_RDWR, 0666);
-    if (shm_fd == -1) {
+    int fd = shm_open(SHM_TX_POOL_NAME, O_CREAT | O_RDWR, 0666);
+    if (fd == -1) {
         perror("shm_open tx_pool");
         exit(EXIT_FAILURE);
     }
 
-    if (ftruncate(shm_fd, size) == -1) {
+    if (ftruncate(fd, (off_t)size) == -1) {
         perror("ftruncate tx_pool");
         exit(EXIT_FAILURE);
     }
 
-    TransactionPool *pool = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    if (pool == MAP_FAILED) {
+    tx_pool = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
+    if (tx_pool == MAP_FAILED) {
         perror("mmap tx_pool");
         exit(EXIT_FAILURE);
     }
 
-    close(shm_fd);
-
-    // Inicialização do pool
-    if (sem_init(&pool->pool_sem, 1, 1) != 0) {
+    if (sem_init(&tx_pool->pool_sem, 1, 1) != 0) {
         perror("sem_init pool");
         exit(EXIT_FAILURE);
     }
 
-    pool->current_block_id = 0;
-    for (int i = 0; i < tx_pool_size; i++) {
-        pool->transactions[i].empty = 1;
-        pool->transactions[i].age = 0;
+    tx_pool->current_block_id = 0;
+    for (int i = 0; i < shared_config->tx_pool_size; i++) {
+        tx_pool->transactions[i].empty = 1;
+        tx_pool->transactions[i].age = 0;
     }
     
     log_message("CONTROLLER", "SHM_TX_POOL CREATED");
-    return pool;
 }
 
-BlockchainLedger *create_blockchain_ledger() {
-    if (shared_config == NULL) {
-        perror("shared_config não inicializado");
-        exit(EXIT_FAILURE);
-    }
+static void create_blockchain_ledger(void) {
+    
+    size_t size = sizeof(BlockchainLedger) + sizeof(Block) * shared_config->blockchain_blocks;
 
-    int blockchain_blocks = shared_config->blockchain_blocks;
-    size_t size = sizeof(BlockchainLedger) + sizeof(Block) * blockchain_blocks;
-
-    // Criar objeto de memória compartilhada
-    int shm_fd = shm_open(SHM_LEDGER_NAME, O_CREAT | O_RDWR, 0666);
-    if (shm_fd == -1) {
+    int fd = shm_open(SHM_LEDGER_NAME, O_CREAT | O_RDWR, 0666);
+    if (fd == -1) {
         perror("shm_open ledger");
         exit(EXIT_FAILURE);
     }
 
-    if (ftruncate(shm_fd, size) == -1) {
+    if (ftruncate(fd, (off_t)size) == -1) {
         perror("ftruncate ledger");
         exit(EXIT_FAILURE);
     }
 
-    BlockchainLedger *ledger = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    ledger = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
     if (ledger == MAP_FAILED) {
         perror("mmap ledger");
         exit(EXIT_FAILURE);
     }
-
-    close(shm_fd);
 
     if (sem_init(&ledger->ledger_sem, 1, 1) != 0) {
         perror("sem_init ledger");
         exit(EXIT_FAILURE);
     }
     
+    memset(ledger->blocks, 0, sizeof(Block) * shared_config->blockchain_blocks);
     log_message("CONTROLLER", "SHM_LEDGER CREATED");
-    return ledger;
 }
 
-// Inicializar message queue
-int init_message_queue() {
+static void init_message_queue(void) {
     key_t key = ftok(CONFIG_FILE, 'M');
     if (key == -1) {
         perror("ftok for message queue");
@@ -208,55 +199,29 @@ int init_message_queue() {
     }
 
     log_message("CONTROLLER", "MESSAGE QUEUE CREATED WITH ID %d", msgid);
-    return msgid;
 }
 
-
-// Criar NAMED PIPE
-void init_named_pipe() {
-    if (mkfifo(VALIDATOR_PIPE, 0666) == -1) {
-        if (errno != EEXIST) {
-            perror("mkfifo");
-            log_message("CONTROLLER", "Erro ao criar pipe %s", VALIDATOR_PIPE);
-            exit(EXIT_FAILURE);
-        }
+static void init_named_pipe(void) {
+    if (mkfifo(VALIDATOR_PIPE, 0666) == -1 && errno != EEXIST) {
+        perror("mkfifo");
+        log_message("CONTROLLER", "Error creating pipe %s", VALIDATOR_PIPE);
+        exit(EXIT_FAILURE);
     }
-    log_message("CONTROLLER", "FIFO único criado: %s", VALIDATOR_PIPE);
+    log_message("CONTROLLER", "NAMED PIPE CREATED");
 }
 
-void scale_validators(int new_count) {
-    sem_wait(&shared_config->config_sem);
-
-    if (new_count > shared_config->active_validators) {
-        // Criar novos validadores
-        for (int i = shared_config->active_validators; i < new_count; i++) {
-            log_message("CONTROLLER", "%d", i);
-
-            pid_t pid = fork();
-            if (pid == 0) {
-                execl("./validator", "validator", NULL);
-                perror("execl validator");
-                exit(EXIT_FAILURE);
-            }
-            log_message("CONTROLLER", "Validador %d criado com PID %d", i, pid);
-        }
-    } else if (new_count < shared_config->active_validators) {
-    }
-
-    shared_config->active_validators = new_count;
-    sem_post(&shared_config->config_sem);
-}
-
-
-// Iniciar processo Miner com NUM_MINERS threads
-pid_t start_miner_process() {
+/*
+ * Process Launchers
+ * Functions responsible for forking and executing the
+ * constituent processes of the simulation (Miner, Validator, Statistics).
+ */
+static pid_t start_miner_process(void) {
     pid_t pid = fork();
     if (pid == -1) {
-        perror("fork failed");
+        perror("fork miner");
         exit(EXIT_FAILURE);
     }
     if (pid == 0) {
-        // Passar os nomes das SHMs como argumentos
         execl("./miner", "miner", SHM_CONFIG_NAME, SHM_TX_POOL_NAME, SHM_LEDGER_NAME, NULL);
         perror("execl miner");
         exit(EXIT_FAILURE);
@@ -265,9 +230,12 @@ pid_t start_miner_process() {
     return pid;
 }
 
-// Iniciar processo Validator
-pid_t start_validator_process() {
+static pid_t start_validator_process(void) {
     pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork validator");
+        exit(EXIT_FAILURE);
+    }
     if (pid == 0) {
         execl("./validator", "validator", NULL);
         perror("execl validator");
@@ -277,9 +245,12 @@ pid_t start_validator_process() {
     return pid;
 }
 
-// Iniciar processo Statistics
-pid_t start_statistics_process() {
+static pid_t start_statistics_process(void) {
     pid_t pid = fork();
+    if (pid == -1) {
+        perror("fork statistics");
+        exit(EXIT_FAILURE);
+    }
     if (pid == 0) {
         execl("./statistics", "statistics", NULL);
         perror("execl statistics");
@@ -289,53 +260,77 @@ pid_t start_statistics_process() {
     return pid;
 }
 
-void print_ledger() {
+/*
+ * Dynamic Scaling (Auto-Scaling)
+ * Adjusts the number of active validators based on the current
+ * load of the Transaction Pool, launching or terminating processes.
+ */
+static void scale_validators(int new_count) {
+    sem_wait(&shared_config->config_sem);
+    int current = shared_config->active_validators;
+
+    if (new_count > current) {
+        for (int i = current; i < new_count; i++) {
+            pid_t pid = start_validator_process();
+            validator_pids[i] = pid;
+        }
+        log_message("CONTROLLER", "Scaled validators %d -> %d", current, new_count);
+    } else if (new_count < current) {
+        for (int i = current - 1; i >= new_count; i--) {
+            if (validator_pids[i] > 0) {
+                kill(validator_pids[i], SIGTERM);
+                waitpid(validator_pids[i], NULL, 0);
+                log_message("CONTROLLER", "VALIDATOR PID %d TERMINATED", validator_pids[i]);
+                validator_pids[i] = -1;
+            }
+        }
+        log_message("CONTROLLER", "Scaled validators %d -> %d", current, new_count);
+    }
+
+    shared_config->active_validators = new_count;
+    sem_post(&shared_config->config_sem);
+}
+
+/*
+ * Monitoring and Debug Utilities
+ * Functions for calculating metrics (pool occupancy) and
+ * printing a structured dump of the current blockchain state.
+ */
+static void dump_ledger(void) {
     if (ledger == NULL || shared_config == NULL) {
-        fprintf(stderr, "Error: Ledger or config not initialized\n");
         return;
     }
 
-    sem_wait(&ledger->ledger_sem);  // Bloquear o semáforo para acesso seguro
+    sem_wait(&ledger->ledger_sem);
+    log_message("CONTROLLER", "Dumping the Ledger");
 
-    sleep(3);
-    printf("\n=== Blockchain Ledger ===\n");
+    printf("\n=================== Start Ledger ===================\n");
 
     for (int i = 0; i < shared_config->blockchain_blocks; i++) {
-        // Parar se encontrar bloco inválido (não o primeiro)
-        if ((ledger->blocks[i].block_id[0] == '\0' || strcmp(ledger->blocks[i].block_id, "0") == 0) && i != 0) {
+        Block *b = &ledger->blocks[i];
+        if (b->curr_hash[0] == '\0') {
             break;
         }
 
-        // Cabeçalho do bloco
-        printf("╔══ Block %03d ", i);
-        for (int j = 0; j < 50; j++) printf("═");
-        printf("\n");
-
-        printf("║ ID: BLOCK-%d-%s\n", getpid(), ledger->blocks[i].block_id);
-        printf("║ Prev Hash:\n");
-        printf("║ %s\n", ledger->blocks[i].prev_hash);
-        printf("║ Block Timestamp: %ld\n", ledger->blocks[i].timestamp);
-        printf("║ Nonce: %d\n", ledger->blocks[i].nonce);
-        
-        // Transações
-        printf("║ Transactions (%d):\n", ledger->blocks[i].transaction_count);
-        for (int j = 0; j < ledger->blocks[i].transaction_count; j++) {
-            Transaction tx = ledger->blocks[i].transactions[j];
-            printf("║   [%02d] ID: TX-%d-%s | Reward: %d | Value: %.2f | Timestamp: %ld\n",
-                j, tx.sender_pid, tx.id, tx.reward, (float)tx.value, tx.timestamp);
+        printf("||---- Block %03d --\n", i);
+        printf("Block ID: %s\n", b->block_id);
+        printf("Previous Hash:\n%s\n", b->prev_hash);
+        printf("Block Timestamp: %ld\n", b->timestamp);
+        printf("Nonce: %d\n", b->nonce);
+        printf("Transactions:\n");
+        for (int j = 0; j < b->transaction_count; j++) {
+            Transaction *tx = &b->transactions[j];
+            printf(" [%d] ID: %s | Reward: %d | Value: %.2f | Timestamp: %ld\n", j, tx->id, tx->reward, (float)tx->value, tx->timestamp);
         }
-
-        // Rodapé do bloco
-        printf("╚");
-        for (int j = 0; j < 60; j++) printf("═");
-        printf("\n\n");
+        printf("||------------------------------\n");
     }
+    printf("=================== End Ledger ===================\n");
 
-    sem_post(&ledger->ledger_sem);  // Liberar o semáforo
+    sem_post(&ledger->ledger_sem);
 }
 
-int calculate_pool_occupancy() {
-    sem_wait(&tx_pool->pool_sem); // Bloqueia o pool para acesso seguro
+static int calculate_pool_occupancy(void) {
+    sem_wait(&tx_pool->pool_sem);
     
     int occupied = 0;
     for (int i = 0; i < shared_config->tx_pool_size; i++) {
@@ -344,31 +339,40 @@ int calculate_pool_occupancy() {
         }
     }
     
-    sem_post(&tx_pool->pool_sem); // Libera o pool
-    return (occupied * 100) / shared_config->tx_pool_size; // % ocupado
+    sem_post(&tx_pool->pool_sem);
+    return (occupied * 100) / shared_config->tx_pool_size;
 }
 
-// Captura SIGINT, termina a simulação e liberta recursos
-void cleanup() {
+/*
+ * Resource Cleanup (Teardown)
+ * Graceful termination of child processes and release of
+ * all OS-level IPC resources.
+ */
+static void cleanup(void) {
+    log_message("CONTROLLER", "WAITING FOR LAST TASKS TO FINISH");
+    dump_ledger();
 
-    print_ledger();
+    if (miner_pid > 0) {
+        kill(miner_pid, SIGTERM);
+        waitpid(miner_pid, NULL, 0);
+    }
 
-    log_message("CONTROLLER", "CLOSING SIMULATION...");
+    for (int i = 0; i < 3; i++) {
+        if (validator_pids[i] > 0) {
+            kill(validator_pids[i], SIGTERM);
+            waitpid(validator_pids[i], NULL, 0);
+        }
+    }
+    
+    if (statistics_pid > 0) {
+        kill(statistics_pid, SIGTERM);
+        waitpid(statistics_pid, NULL, 0);
+    }
 
-    // Terminar processos
-    kill(miner_pid, SIGTERM);
-    kill(validator_pid, SIGTERM);
-    kill(statistics_pid, SIGTERM);
-
-    wait(NULL);
-    wait(NULL);
-    wait(NULL);
-
-    // Destruir semáforos
     sem_destroy(&tx_pool->pool_sem);
     sem_destroy(&ledger->ledger_sem);
+    sem_destroy(&shared_config->config_sem);
     
-    // Desmapear memórias compartilhadas
     size_t tx_pool_size = sizeof(TransactionPool) + sizeof(Transaction) * shared_config->tx_pool_size;
     size_t ledger_size = sizeof(BlockchainLedger) + sizeof(Block) * shared_config->blockchain_blocks;
     
@@ -376,78 +380,87 @@ void cleanup() {
     munmap(tx_pool, tx_pool_size);
     munmap(ledger, ledger_size);
 
-    // Remover objetos de memória compartilhada
     shm_unlink(SHM_CONFIG_NAME);
     shm_unlink(SHM_TX_POOL_NAME);
     shm_unlink(SHM_LEDGER_NAME);
 
-    // Limpeza da message queue e FIFOs (mantida igual)
-    if (msgctl(msgid, IPC_RMID, NULL) == -1) {
-        perror("msgctl (remover fila)");
-    } else {
-        log_message("CONTROLLER", "Message queue removida.");
+    if (msgid != 1 && msgctl(msgid, IPC_RMID, NULL) == -1) {
+        perror("msgctl IPC_RMID");
     }
 
-    for (int i = 0; i < 3; i++) {
-        char pipe_name[32];
-        snprintf(pipe_name, sizeof(pipe_name), "VALIDATOR_INPUT_%d", i);
-        unlink(pipe_name);
-    }
-    log_message("CONTROLLER", "Todos os FIFOs removidos.");
-    log_message("CONTROLLER", "FIFOs removidos.");
+    unlink(VALIDATOR_PIPE);
 
-    log_message("CONTROLLER", "Recursos libertados e simulação terminada.");
+    log_message("CONTROLLER", "CLOSING SIMULATION...");
+    close_logger();
     exit(EXIT_SUCCESS);
 }
 
-// Handler para SIGINT
-void handle_sigint(int signum) {
-    log_message("CONTROLLER", "Sinal SIGINT (%d) recebido.", signum);
-    cleanup();
+/*
+ * Signal Handling
+ * Asynchronous routines for handling signals (SIGINT, SIGUSR1),
+ * ensuring safe termination and on-demand state dumps.
+ */
+static void handle_sigint(int signum) {
+    (void)signum;
+    g_shutdown = 1;
 }
 
+static void handle_sigusr1(int signum) {
+    (void)signum;
+    log_message("CONTROLLER", "SIGNAL SIGUSR1 RECEIVED");
+    dump_ledger();
+}
 
-int main() {
-    signal(SIGINT, handle_sigint);  
+/*
+ * Main Entry Point
+ * Overall system orchestration: bootstrap, continuous monitoring
+ * loop of the transaction pool, and final teardown.
+ */
+int main(void) {
+    struct sigaction sa_int = { .sa_handler = handle_sigint, .sa_flags = SA_RESTART };
+    struct sigaction sa_usr1 = { .sa_handler = handle_sigusr1, .sa_flags = SA_RESTART };
+    sigemptyset(&sa_int.sa_mask);
+    sigemptyset(&sa_usr1.sa_mask);
+    sigaction(SIGINT, &sa_int, NULL);
+    sigaction(SIGUSR1, &sa_usr1, NULL);
+
     init_logger();
     log_message("CONTROLLER", "DEI_CHAIN SIMULATOR STARTING");
 
-	// Ler config file
     read_config(CONFIG_FILE);
     create_shared_config();
     init_named_pipe();
+    create_transaction_pool();
+    create_blockchain_ledger();
+    init_message_queue();
     
-    // Inicializar os recursos
-    tx_pool = create_transaction_pool();
-    ledger = create_blockchain_ledger();
-    msgid = init_message_queue();
-    
-	// Iniciar os processos
     miner_pid = start_miner_process();
-    validator_pid = start_validator_process();
+    validator_pids[0] = start_validator_process();
     statistics_pid = start_statistics_process();
+    shared_config->active_validators = 1;
 
-    while (1) {
+    while (!g_shutdown) {
+
+        sleep(SCALE_INTERVAL_S);
+        if (g_shutdown) {
+            break;
+        }
 
         int occupancy = calculate_pool_occupancy();
+
+        sem_wait(&shared_config->config_sem);
+        int current = shared_config->active_validators;
+        sem_post(&shared_config->config_sem);
         
-        if (occupancy >= 80 && shared_config->active_validators < 3) {
+        if (occupancy >= 80 && current < 3) {
             scale_validators(3);
-        } else if (occupancy >= 60 && shared_config->active_validators < 2) {
+        } else if (occupancy >= 60 && current < 2) {
             scale_validators(2);
-        } else if (occupancy < 40 && shared_config->active_validators > 1) {
+        } else if (occupancy < 40 && current > 1) {
             scale_validators(1);
         }
     }
     
-    sleep(2); // Verificar a cada 2 segundos
-
-    // Espera pelos processos filhos (bloqueia até que sejam terminados manualmente com SIGINT)
-    wait(NULL);
-    wait(NULL);
-    wait(NULL);
-
-    cleanup();  // Em caso de terminação normal (não por sinal)
-    
+    cleanup();
     return 0;
 }
