@@ -1,36 +1,42 @@
-/*
-Miguel Fernandes | 2023232584
-Miguel Cunha | 2021215610
-*/
+/**
+ * DEIChain — Blockchain Simulation in C
+ *
+ * Authors:
+ * - Miguel Cunha
+ * - Miguel Fernandes
+ *
+ * Course: Operating Systems (2024/2025)
+ * Degree: BSc in Informatics Engineering (LEI)
+ * Institution: University of Coimbra - DEI
+ */
 
 #include "logging.h"
 #include <stdarg.h>
 #include <string.h>
 #include <sys/types.h>
 #include <unistd.h>
-
-#define LOG_FILE "DEIChain_log.txt"
+#include <errno.h>
 
 pthread_mutex_t log_mutex = PTHREAD_MUTEX_INITIALIZER;
-FILE* log_file = NULL;
+static FILE* log_file = NULL;
 
-void init_logger() {
+void init_logger(void) {
     pthread_mutex_lock(&log_mutex);
-    log_file = fopen(LOG_FILE, "a");
     if (log_file == NULL) {
-        perror("Failed to open log file");
-        exit(EXIT_FAILURE);
+        log_file = fopen(LOG_FILE, "a");
+        if (log_file == NULL) {
+            perror("Failed to open log file");
+        }
     }
     pthread_mutex_unlock(&log_mutex);
 }
 
 void log_message(const char* process_name, const char* format, ...) {
-    time_t now;
-    time(&now);
-    char time_str[20];
-    strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    time_t now = time(NULL);
+    char time_str[10];
+    strftime(time_str, sizeof(time_str), "%H:%M:%S", localtime(&now));
     
-    char message[512];
+    char message[1024];
     va_list args;
     va_start(args, format);
     vsnprintf(message, sizeof(message), format, args);
@@ -38,21 +44,25 @@ void log_message(const char* process_name, const char* format, ...) {
     
     pthread_mutex_lock(&log_mutex);
     
-    printf("[%s][%s][PID:%d] %s\n", time_str, process_name, getpid(), message);
+    printf("%s %s: %s\n", time_str, process_name, message);
     
     if (log_file) {
-        fprintf(log_file, "[%s][%s][PID:%d] %s\n", time_str, process_name, getpid(), message);
+        fprintf(log_file, "%s %s: %s\n", time_str, process_name, message);
         fflush(log_file);
     }
     
     pthread_mutex_unlock(&log_mutex);
 }
 
-void close_logger() {
+void close_logger(void) {
     pthread_mutex_lock(&log_mutex);
     if (log_file) {
         fclose(log_file);
         log_file = NULL;
     }
     pthread_mutex_unlock(&log_mutex);
+}
+
+FILE *log_get_file(void) {
+    return log_file;
 }
