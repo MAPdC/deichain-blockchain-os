@@ -1,20 +1,26 @@
-/*
-Miguel Fernandes | 2023232584
-Miguel Cunha | 2021215610
-*/
+/**
+ * DEIChain — Blockchain Simulation in C
+ *
+ * Authors:
+ * - Miguel Cunha
+ * - Miguel Fernandes
+ *
+ * Course: Operating Systems (2024/2025)
+ * Degree: BSc in Informatics Engineering (LEI)
+ * Institution: University of Coimbra - DEI
+ */
 
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
 #include <sys/ipc.h>
-#include <sys/shm.h>
 #include <fcntl.h>
 #include <sys/stat.h>
 #include <string.h>
 #include <openssl/sha.h>
 #include <sys/msg.h>
 #include <signal.h>
-#include <pthread.h>
 #include <sys/mman.h>
 #include <errno.h>
 #include "shared.h"
@@ -23,96 +29,104 @@ Miguel Cunha | 2021215610
 #define CONFIG_FILE "config.cfg"
 #define VALIDATOR_PIPE "VALIDATOR_PIPE"
 
+/*
+ * Configuration and Global State
+ * File descriptors, IPC identifiers, and graceful shutdown flags
+ * utilized exclusively by the Validator process.
+ */
+
 static int pipe_fd = -1;
 static int msgid = -1;
+static volatile sig_atomic_t g_stop = 0;
 
-// Função para mapear a memória compartilhada de configuração
-Config* access_shared_config(const char* shm_name) {
-    int shm_fd = shm_open(shm_name, O_RDWR, 0666);
-    if (shm_fd == -1) {
+/*
+ * Shared Memory Accessors
+ * Helper functions to map and attach to the configuration,
+ * transaction pool, and blockchain ledger shared memory segments.
+ */
+static Config *access_shared_config(const char *name) {
+    int fd = shm_open(name, O_RDWR, 0666);
+    if (fd == -1) {
         perror("shm_open config");
-        return NULL;
+        exit(EXIT_FAILURE);
     }
 
-    Config *config = mmap(NULL, sizeof(Config), PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    close(shm_fd);
+    Config *c = mmap(NULL, sizeof(Config), PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
     
-    if (config == MAP_FAILED) {
+    if (c == MAP_FAILED) {
         perror("mmap config");
-        return NULL;
+        exit(EXIT_FAILURE);
     }
 
-    return config;
+    return c;
 }
 
-// Função para mapear o pool de transações
-TransactionPool* access_shared_tx_pool(const char* shm_name, int tx_pool_size) {
-    size_t size = sizeof(TransactionPool) + sizeof(Transaction) * tx_pool_size;
+static TransactionPool *access_shared_tx_pool(const char *name, int sz) {
+    size_t size = sizeof(TransactionPool) + sizeof(Transaction) * sz;
     
-    int shm_fd = shm_open(shm_name, O_RDWR, 0666);
-    if (shm_fd == -1) {
+    int fd = shm_open(name, O_RDWR, 0666);
+    if (fd == -1) {
         perror("shm_open tx_pool");
-        return NULL;
+        exit(EXIT_FAILURE);
     }
 
-    TransactionPool *pool = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    close(shm_fd);
+    TransactionPool *p = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
     
-    if (pool == MAP_FAILED) {
+    if (p == MAP_FAILED) {
         perror("mmap tx_pool");
-        return NULL;
+        exit(EXIT_FAILURE);
     }
 
-    return pool;
+    return p;
 }
 
-// Função para mapear o ledger da blockchain
-BlockchainLedger* access_shared_ledger(const char* shm_name, int blockchain_blocks) {
-    size_t size = sizeof(BlockchainLedger) + sizeof(Block) * blockchain_blocks;
+static BlockchainLedger *access_shared_ledger(const char *name, int sz) {
+    size_t size = sizeof(BlockchainLedger) + sizeof(Block) * sz;
     
-    int shm_fd = shm_open(shm_name, O_RDWR, 0666);
-    if (shm_fd == -1) {
+    int fd = shm_open(name, O_RDWR, 0666);
+    if (fd == -1) {
         perror("shm_open ledger");
-        return NULL;
+        exit(EXIT_FAILURE);
     }
 
-    BlockchainLedger *ledger = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    close(shm_fd);
+    BlockchainLedger *l = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    close(fd);
     
-    if (ledger == MAP_FAILED) {
+    if (l == MAP_FAILED) {
         perror("mmap ledger");
-        return NULL;
+        exit(EXIT_FAILURE);
     }
 
-    return ledger;
+    return l;
 }
 
-// Função auxiliar para encontrar o último bloco válido
-int find_last_valid_block() {
-    int last_valid = -1; // -1 indica blockchain vazia
+/*
+ * Validation Utilities
+ * Functions to verify Proof of Work (SHA-256) and safely locate
+ * the most recent valid block in the ledger.
+ */
+static int find_last_valid_block_locked(void) {
+    int last = -1;
     for (int i = 0; i < shared_config->blockchain_blocks; i++) {
-        if (ledger->blocks[i].curr_hash[0] == '\0') { // Bloco não inicializado
+        if (ledger->blocks[i].curr_hash[0] == '\0') {
             break;
         }
-        last_valid = i;
+        last = i;
     }
-    return last_valid;
+    return last;
 }
 
-// Verifica se o Proof of Work é válido
-int validate_pow(const Block *block) {
-    char calculated_hash[SHA256_DIGEST_LENGTH*2+1];
-    calculate_block_hash(block, calculated_hash);
+static int validate_pow(const Block *block) {
+    char computed[SHA256_DIGEST_LENGTH * 2 + 1];
+    calculate_block_hash(block, computed);
     
-    // Verificação em 2 passos:
-    // 1. Hash calculado bate com o declarado
-    if (strcmp(calculated_hash, block->curr_hash) != 0) {
-        log_message("VALIDATOR", "Discrepância de hash: Calculado=%s vs Declarado=%s",
-                   calculated_hash, block->curr_hash);
+    if (strcmp(computed, block->curr_hash) != 0) {
+        log_message("VALIDATOR", "Hash mismatch: Calculated=%s vs Declared=%s", computed, block->curr_hash);
         return 0;
     }
-    
-    // 2. Dificuldade satisfeita
+
     for (int i = 0; i < block->difficulty; i++) {
         if (block->curr_hash[i] != '0') return 0;
     }
@@ -120,225 +134,231 @@ int validate_pow(const Block *block) {
     return 1;
 }
 
-// Valida todas as transações de um bloco
-int validate_transactions(Block *block) {
-    sem_wait(&tx_pool->pool_sem);
-    int valid = 1;
+/*
+ * Statistics Reporting
+ * Constructs and dispatches validation outcomes (valid/invalid)
+ * and reward credits to the Statistics process via message queue.
+ */
+static void send_stats(const Block *block, int valid) {
+    StatsMessage msg = {
+        .mtype     = 1,
+        .valid     = valid,
+        .timestamp = time(NULL),
+        .credits   = 0
+    };
+    snprintf(msg.miner_id, sizeof(msg.miner_id), "%d", block->miner_id);
+    strncpy(msg.block_id, block->block_id, sizeof(msg.block_id) - 1);
     for (int i = 0; i < block->transaction_count; i++) {
+        msg.credits += block->transactions[i].reward;
+    }
+
+    if (msgsnd(msgid, &msg, sizeof(StatsMessage) - sizeof(long), 0) == -1) {
+        log_message("VALIDATOR", "msgsnd failed: %s", strerror(errno));
+    }
+}
+
+/*
+ * Core Block Validation
+ * Atomically validates PoW, chain continuity, and transaction availability.
+ * Appends valid blocks to the ledger and purges processed transactions.
+ */
+static void process_block(Block *block) {
+
+    log_message("VALIDATOR", "STARTED VALIDATING BLOCK FROM MINER %d (%s)", block->miner_id, block->block_id);
+
+    /* 1. PoW */
+    if (!validate_pow(block)) {
+        log_message("VALIDATOR", "BLOCK FROM MINER %d INVALID (PoW)", block->miner_id);
+        send_stats(block, 0);
+        return;
+    }
+
+    /* 2. Chain continuity + append — held under ledger_sem to be atomic */
+    sem_wait(&ledger->ledger_sem);
+
+    int last = find_last_valid_block_locked();
+
+    if (last == -1) {
+        /* Genesis block */
+        if (strcmp(block->prev_hash, "INITIAL_HASH") != 0) {
+            sem_post(&ledger->ledger_sem);
+            log_message("VALIDATOR", "BLOCK FROM MINER %d INVALID (prev_hash genesis)", block->miner_id);
+            send_stats(block, 0);
+            return;
+        }
+    } else {
+        if (strcmp(block->prev_hash, ledger->blocks[last].curr_hash) != 0) {
+            sem_post(&ledger->ledger_sem);
+            log_message("VALIDATOR", "BLOCK FROM MINER %d INVALID (prev_hash mismatch)", block->miner_id);
+            send_stats(block, 0);
+            return;
+        }
+    }
+
+    int next_idx = last + 1;
+    if (next_idx >= shared_config->blockchain_blocks) {
+        sem_post(&ledger->ledger_sem);
+        log_message("VALIDATOR", "Ledger full — terminating simulation");
+        g_stop = 1;
+        return;
+    }
+
+    /* 3. Transactions still in pool? — check while ledger is locked so no
+     * other validator can slip in and remove them between our check and write. */
+    sem_wait(&tx_pool->pool_sem);
+
+    int tx_valid = 1;
+    for (int i = 0; i < block->transaction_count && tx_valid; i++) {
         int found = 0;
         for (int j = 0; j < shared_config->tx_pool_size; j++) {
-            if (strcmp(tx_pool->transactions[j].id, block->transactions[i].id) == 0) {
+            if (!tx_pool->transactions[j].empty && strcmp(tx_pool->transactions[j].id, block->transactions[i].id) == 0) {
                 found = 1;
                 break;
             }
         }
         if (!found) {
-            valid = 0;
-            break;
+            tx_valid = 0;
         }
     }
-    sem_post(&tx_pool->pool_sem);
-    return valid;
-}
 
-// Função principal de validação de blocos
-int validate_block(Block *block) {
-    // 1. Verificar Proof of Work
-    if (!validate_pow(block)) {
-        log_message("VALIDATOR", "Bloco %s: Proof of Work inválido", block->block_id);
-        return 0;
-    }
-
-    // 2. Verificar hash anterior
-    sem_wait(&ledger->ledger_sem);
-    int last_valid_idx = find_last_valid_block();
-    
-    if (last_valid_idx == -1) { // Blockchain vazia (bloco gênese)
-        if (strcmp(block->prev_hash, "INITIAL_HASH") != 0) {
-            sem_post(&ledger->ledger_sem);
-            log_message("VALIDATOR", "Bloco gênese com hash anterior inválido");
-            return 0;
-        }
-    } else {
-        if (strcmp(block->prev_hash, ledger->blocks[last_valid_idx].curr_hash) != 0) {
-            sem_post(&ledger->ledger_sem);
-            log_message("VALIDATOR", "Hash anterior não corresponde ao último bloco válido");
-            return 0;
-        }
-    }
-    sem_post(&ledger->ledger_sem);
-
-    // 3. Verificar transações
-    if (!validate_transactions(block)) {
-        log_message("VALIDATOR", "Transações inválidas no bloco %s", block->block_id);
-        return 0;
-    }
-
-    return 1;
-}
-
-// Adiciona um bloco válido ao ledger
-void add_to_ledger(Block *block) {
-    sem_wait(&ledger->ledger_sem);
-    
-    int next_idx = find_last_valid_block() + 1;
-    if (next_idx >= shared_config->blockchain_blocks) {
+    if (!tx_valid) {
+        sem_post(&tx_pool->pool_sem);
         sem_post(&ledger->ledger_sem);
-        log_message("VALIDATOR", "Ledger cheio - não é possível adicionar mais blocos");
+        log_message("VALIDATOR", "BLOCK FROM MINER %d INVALID (tx already processed)", block->miner_id);
+        send_stats(block, 0);
         return;
     }
 
+    /* All checks passed — commit atomically */
     ledger->blocks[next_idx] = *block;
-    sem_post(&ledger->ledger_sem);
-    
-    log_message("VALIDATOR", "Bloco %s adicionado ao ledger na posição %d\n\n", 
-               block->block_id, next_idx);
-}
 
-void send_block_statistics(const Block *block, int valid) {
-    if (!block || !block->block_id[0]) {
-        log_message("VALIDATOR", "Invalid block data for statistics");
-        return;
-    }
-
-    StatsMessage msg = {
-        .mtype = 1,
-        .valid = valid,
-        .timestamp = time(NULL)
-    };
-    
-    // Converter miner_id para string
-    snprintf(msg.miner_id, sizeof(msg.miner_id), "%d", block->miner_id);
-    
-    // Copiar block_id
-    strncpy(msg.block_id, block->block_id, sizeof(msg.block_id) - 1);
-    msg.block_id[sizeof(msg.block_id) - 1] = '\0';
-    
-    // Calcular créditos (soma das recompensas)
-    msg.credits = 0;
+    /* Remove transactions from pool */
     for (int i = 0; i < block->transaction_count; i++) {
-        msg.credits += block->transactions[i].reward;
-    }
-    
-    if (msgsnd(msgid, &msg, sizeof(StatsMessage) - sizeof(long), 0) == -1) {
-        perror("msgsnd");
-        log_message("VALIDATOR", "Failed to send stats for block %s", block->block_id);
-    }
-}
-
-// Processa um bloco recebido
-void process_block(Block *block) {
-    int valid = validate_block(block);
-
-    if (valid) {
-        sem_wait(&tx_pool->pool_sem);
-        for (int i = 0; i < block->transaction_count; i++) {
-            for (int j = 0; j < shared_config->tx_pool_size; j++) {
-                if (!tx_pool->transactions[j].empty && 
-                    strcmp(tx_pool->transactions[j].id, block->transactions[i].id) == 0) {
-                    tx_pool->transactions[j].empty = 1; // Marcar como processada
-                    break;
-                }
+        for (int j = 0; j < shared_config->tx_pool_size; j++) {
+            if (!tx_pool->transactions[j].empty && strcmp(tx_pool->transactions[j].id, block->transactions[i].id) == 0) {
+                tx_pool->transactions[j].empty = 1;
+                break;
             }
         }
-        sem_post(&tx_pool->pool_sem);
-        add_to_ledger(block);
     }
-    send_block_statistics(block, valid);
+
+    sem_post(&tx_pool->pool_sem);
+    sem_post(&ledger->ledger_sem);
+
+    log_message("VALIDATOR", "BLOCK FROM MINER %d VALID!", block->miner_id);
+    log_message("VALIDATOR", "BLOCK FROM MINER %d INSERTED IN BLOCKCHAIN (pos %d)", block->miner_id, next_idx);
+    send_stats(block, 1);
 }
 
-void age_transactions() {
+/*
+ * Anti-Starvation (Aging) Mechanism
+ * Increments the age of pending transactions upon every pool inspection,
+ * periodically boosting their reward to ensure eventual processing.
+ */
+static void age_transactions(void) {
     sem_wait(&tx_pool->pool_sem);
     for (int i = 0; i < shared_config->tx_pool_size; i++) {
         if (!tx_pool->transactions[i].empty) {
             tx_pool->transactions[i].age++;
             if (tx_pool->transactions[i].age % 50 == 0) {
-                tx_pool->transactions[i].reward++;
+                tx_pool->transactions[i].reward++; /* anti-starvation */
             }
         }
     }
     sem_post(&tx_pool->pool_sem);
 }
 
-// Liberta recursos
-void cleanup() {
-    log_message("VALIDATOR", "Liberando recursos...");
+/*
+ * Resource Cleanup (Teardown)
+ * Safely detaches shared memory segments, closes the named pipe,
+ * and performs final teardown upon process termination.
+ */
+static void cleanup(void) {
+    log_message("VALIDATOR", "Free resources...");
     
-    // Fechar pipe
     if (pipe_fd != -1) {
         close(pipe_fd);
     }
     
-    // Desmapear memórias compartilhadas
-    if (shared_config) {
-        munmap(shared_config, sizeof(Config));
+    if (shared_config && tx_pool) {
+        size_t sz = sizeof(TransactionPool) + sizeof(Transaction) * shared_config->tx_pool_size;
+        munmap(tx_pool, sz);
     }
-    if (tx_pool) {
-        size_t tx_pool_size = sizeof(TransactionPool) + sizeof(Transaction) * shared_config->tx_pool_size;
-        munmap(tx_pool, tx_pool_size);
+    if (shared_config && ledger) {
+        size_t sz = sizeof(BlockchainLedger) + sizeof(Block) * shared_config->blockchain_blocks;
+        munmap(ledger, sz);
     }
-    if (ledger) {
-        size_t ledger_size = sizeof(BlockchainLedger) + sizeof(Block) * shared_config->blockchain_blocks;
-        munmap(ledger, ledger_size);
-    }
-    
-    // Fechar logger
+    if (shared_config) munmap(shared_config, sizeof(Config));
+
     close_logger();
-    
     exit(EXIT_SUCCESS);
 }
 
-// Handler para SIGINT
-void handle_sigint(int sig) {
+/*
+ * Signal Handling
+ * Intercepts SIGINT/SIGTERM to safely break the validation loop
+ * and trigger the graceful teardown sequence.
+ */
+static void handle_sigterm(int sig) {
     (void)sig;
-    log_message("VALIDATOR", "Sinal SIGINT recebido");
-    cleanup();
+    g_stop = 1;
 }
 
-int main() {
-    signal(SIGTERM, handle_sigint);
-    signal(SIGINT, handle_sigint);
+/*
+ * Main Entry Point
+ * Connects to IPC mechanisms (pipe, message queue, shared memory)
+ * and enters the continuous block validation and transaction aging loop.
+ */
+int main(void) {
+    struct sigaction sa = { .sa_handler = handle_sigterm, .sa_flags = SA_RESTART };
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGTERM, &sa, NULL);
+    sigaction(SIGINT, &sa, NULL);
+
     init_logger();
 
-    // Inicializar memórias compartilhadas
     shared_config = access_shared_config("/deichain_config");
     tx_pool = access_shared_tx_pool("/deichain_tx_pool", shared_config->tx_pool_size);
     ledger = access_shared_ledger("/deichain_ledger", shared_config->blockchain_blocks);
 
-    log_message("VALIDATOR", "Validator iniciado e pronto para processar blocos");
-    
+    log_message("VALIDATOR", "READY FOR WORK");
+
     pipe_fd = open(VALIDATOR_PIPE, O_RDONLY);
     if (pipe_fd == -1) {
-        log_message("VALIDATOR", "Erro ao abrir pipe");
+        log_message("VALIDATOR", "Error opening pipe: %s", strerror(errno));
         exit(EXIT_FAILURE);
     }
 
     key_t key = ftok(CONFIG_FILE, 'M');
     if (key == -1) {
-        perror("ftok");
-        exit(EXIT_FAILURE);
+        perror("ftok"); 
+        exit(EXIT_FAILURE); 
     }
-
     msgid = msgget(key, 0666 | IPC_CREAT);
-    if (msgid == -1) {
-        perror("msgget");
-        exit(EXIT_FAILURE);
+    if (msgid == -1) { 
+        perror("msgget"); 
+        exit(EXIT_FAILURE); 
     }
 
-    // Loop principal
-    while (1) {
+    while (!g_stop) {
         age_transactions();
-        Block block;
-        ssize_t bytes_read = read(pipe_fd, &block, sizeof(Block));
-        
-        if (bytes_read == sizeof(Block)) {
-            process_block(&block);
 
-        } else if (bytes_read == -1 && errno != EINTR) {
-            perror("read");
+        Block block;
+        ssize_t n = read(pipe_fd, &block, sizeof(Block));
+
+        if (n == (ssize_t)sizeof(Block)) {
+            process_block(&block);
+        } else if (n == 0) {
+            /* Pipe write-end closed (miner exited) */
+            log_message("VALIDATOR", "Pipe fechado — terminando");
+            break;
+        } else if (n == -1) {
+            if (errno == EINTR) {
+                continue;   /* interrupted by signal, retry */
+            }
+            perror("read pipe");
             break;
         }
-        sleep(1);
     }
 
     cleanup();
