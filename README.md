@@ -107,7 +107,7 @@ kill -SIGINT <controller_pid>  # Or press Ctrl+C in the controller terminal
 ```
 ---
 
-⚙️ **Configuration** (`config.cfg`)
+⚙️ **Configuration** (`config.cfg`)  
 The simulation can be tweaked by modifying the `config.cfg` file before starting the controller.
 ```Plaintext
 5        # NUM_MINERS               — Number of miner threads
@@ -118,7 +118,7 @@ The simulation can be tweaked by modifying the `config.cfg` file before starting
 
 ---
 
-📈 **Statistics Reported**
+📈 **Statistics Reported**  
 When triggered via `SIGUSR1` or upon shutdown, the Statistics process reports:
 - Valid and invalid blocks submitted by each miner.
 - Total credits earned per miner (sum of transaction rewards).
