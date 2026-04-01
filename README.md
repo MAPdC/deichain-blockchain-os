@@ -4,7 +4,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Linux-lightgrey.svg)]()
 [![Concurrency](https://img.shields.io/badge/Concurrency-POSIX_Threads_%7C_IPC-orange.svg)]()
 
-> **Academic project** developed for the **Operating Systems** course at the **University of Coimbra** (Licenciatura em Engenharia Informática, 2024/2025).
+> **Academic project** developed for the **Operating Systems** course at the **University of Coimbra** (BSc in Informatics Engineering, 2024/2025).
 
 A concurrent, multi-process blockchain simulator written in C. This project explores **IPC** (Inter-Process Communication), **shared memory**, **POSIX semaphores**, **named pipes**, **message queues**, and **POSIX threads**.
 
