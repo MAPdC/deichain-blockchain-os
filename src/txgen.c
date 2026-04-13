@@ -79,7 +79,7 @@ static TransactionPool *map_shared_tx_pool(void) {
 /*
  * Transaction Generation
  * Populates a new Transaction structure with randomized
- * values, the specified reward, and a unique identifier.
+ * values, the specified reward and a unique identifier.
  */
 static Transaction generate_transaction(int reward, int counter) {
     Transaction tx;
@@ -110,11 +110,11 @@ static void handle_sigint(int sig) {
 /*
  * Main Entry Point
  * Parses command-line arguments, enforces boundaries, maps shared
- * resources, and executes the periodic transaction generation loop.
+ * resources and executes the periodic transaction generation loop.
  */
 int main(int argc, char *argv[]) {
     if (argc != 3) {
-        fprintf(stderr, "Uso: %s <reward> <intervalo_ms>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <reward> <intervalo_ms>\n", argv[0]);
         fprintf(stderr, "  reward:       %d a %d\n", MIN_REWARD, MAX_REWARD);
         fprintf(stderr, "  intervalo_ms: %d a %d\n", MIN_SLEEP_MS, MAX_SLEEP_MS);
         exit(EXIT_FAILURE);
@@ -124,7 +124,7 @@ int main(int argc, char *argv[]) {
     int sleep_ms = atoi(argv[2]);
 
     if (reward < MIN_REWARD || reward > MAX_REWARD) {
-        fprintf(stderr, "ErroR: reward must be between %d and %d\n", MIN_REWARD, MAX_REWARD);
+        fprintf(stderr, "Error: reward must be between %d and %d\n", MIN_REWARD, MAX_REWARD);
         exit(EXIT_FAILURE);
     }
     if (sleep_ms < MIN_SLEEP_MS || sleep_ms > MAX_SLEEP_MS) {
