@@ -44,7 +44,7 @@ static volatile sig_atomic_t g_stop = 0;
 /*
  * Shared Memory Accessors
  * Functions to map and access the shared memory segments
- * (configuration, transaction pool, and blockchain ledger).
+ * (configuration, transaction pool and blockchain ledger).
  */
 static Config *access_shared_config(void) {
     int fd = shm_open(SHM_CONFIG_NAME, O_RDWR, 0666);
@@ -107,7 +107,7 @@ static BlockchainLedger *access_shared_ledger(int sz) {
 /*
  * Statistics Output and Formatting
  * Aggregates and displays current system metrics, including miner
- * performance, block processing rates, and pool occupancy.
+ * performance, block processing rates and pool occupancy.
  */
 static void print_statistics(void) {
 
@@ -161,7 +161,7 @@ static void print_statistics(void) {
     /* Average transaction processing time */
     if (processed_tx_count > 0) {
         double avg_ms = (double)total_processing_us / processed_tx_count / 1000.0;
-        log_message("STATISTICS", "Avg Transaction Processing Time: %.2fs", avg_ms);
+        log_message("STATISTICS", "Average Transaction Processing Time: %.2fs", avg_ms);
     }
 
     log_message("STATISTICS", "==========================================");
@@ -224,11 +224,11 @@ static void process_one_message(const StatsMessage *msg) {
 /*
  * Resource Cleanup (Teardown)
  * Flushes the remaining message queue, prints the final system
- * statistics, and unmaps all shared memory segments before exiting.
+ * statistics and unmaps all shared memory segments before exiting.
  */
 static void cleanup(void) {
     
-    log_message("STATISTICS", "SIGUSR1 RECEIVED — printing final statistics");
+    log_message("STATISTICS", "SIGUSR1 RECEIVED, printing final statistics");
     print_statistics();
 
     /* Drain any remaining messages (non-blocking) */
@@ -277,7 +277,7 @@ static void handle_sigusr1(int sig) {
 
 /*
  * Main Entry Point
- * Initializes IPC resources, connects to the message queue, and
+ * Initializes IPC resources, connects to the message queue and
  * enters the main blocking loop to process incoming statistics.
  */
 int main(void) {
