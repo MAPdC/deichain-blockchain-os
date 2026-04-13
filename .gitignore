@@ -26,3 +26,6 @@ VALIDATOR_INPUT
 
 # Valgrind output
 vgcore.*
+
+# Video
+*.mp4
