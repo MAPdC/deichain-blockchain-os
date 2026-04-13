@@ -192,7 +192,7 @@ static void init_message_queue(void) {
         exit(EXIT_FAILURE);
     }
 
-    int msgid = msgget(key, IPC_CREAT | 0666);
+    msgid = msgget(key, IPC_CREAT | 0666);
     if (msgid == -1) {
         perror("msgget");
         exit(EXIT_FAILURE);
