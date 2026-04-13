@@ -28,7 +28,7 @@
 
 /*
  * Configuration and Global State
- * Macro definitions, fixed parameters, and global variables
+ * Macro definitions, fixed parameters and global variables
  * shared throughout the miner process.
  */
 #define VALIDATOR_PIPE "VALIDATOR_PIPE"
@@ -41,7 +41,7 @@ static volatile sig_atomic_t g_stop = 0;
 /*
  * Shared Memory Accessors
  * Functions to map and access the shared memory segments
- * (configuration, transaction pool, and blockchain ledger).
+ * (configuration, transaction pool and blockchain ledger).
  */
 static Config* access_shared_config(const char* shm_name) {
     int fd = shm_open(shm_name, O_RDWR, 0666);
@@ -203,7 +203,7 @@ static void send_block_to_validator(Block *block) {
 /*
  * Miner Thread Routine
  * Core execution loop for each miner thread: selects transactions,
- * performs PoW, and submits the resulting block.
+ * performs PoW and submits the resulting block.
  */
 typedef struct {
     int miner_id;
@@ -317,12 +317,12 @@ static void handle_sigterm(int sig) {
 
 /*
  * Main Entry Point
- * Process initialization, dynamic thread pool creation, and
+ * Process initialization, dynamic thread pool creation and
  * teardown/cleanup of resources upon termination.
  */
 int main(int argc, char *argv[]) {
     if (argc != 4) {
-        fprintf(stderr, "Use: %s <config_shm> <tx_pool_shm> <ledger_shm>\n", argv[0]);
+        fprintf(stderr, "Usage: %s <config_shm> <tx_pool_shm> <ledger_shm>\n", argv[0]);
         exit(EXIT_FAILURE);
     }
 
