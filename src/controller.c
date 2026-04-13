@@ -30,7 +30,7 @@
 
 /*
  * Configuration and Global State
- * Macro definitions, fixed parameters, and global variables
+ * Macro definitions, fixed parameters and global variables
  * shared throughout the controller process.
  */
 #define CONFIG_FILE         "config.cfg"
@@ -90,7 +90,7 @@ static void read_config(const char *filename) {
 /*
  * IPC and Shared Memory Initialization
  * Creation and formatting of shared memory segments (shm),
- * semaphores, named pipes, and message queues.
+ * semaphores, named pipes and message queues.
  */
 static void create_shared_config(void) {
 
@@ -414,7 +414,7 @@ static void handle_sigusr1(int signum) {
 /*
  * Main Entry Point
  * Overall system orchestration: bootstrap, continuous monitoring
- * loop of the transaction pool, and final teardown.
+ * loop of the transaction pool and final teardown.
  */
 int main(void) {
     struct sigaction sa_int = { .sa_handler = handle_sigint, .sa_flags = SA_RESTART };
