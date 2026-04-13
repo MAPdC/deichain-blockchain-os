@@ -6,13 +6,13 @@
 
 > **Academic project** developed for the **Operating Systems** course at the **University of Coimbra** (BSc in Informatics Engineering, 2024/2025).
 
-A concurrent, multi-process blockchain simulator written in C. This project explores **IPC** (Inter-Process Communication), **shared memory**, **POSIX semaphores**, **named pipes**, **message queues**, and **POSIX threads**.
+A concurrent, multi-process blockchain simulator written in C. This project explores **IPC** (Inter-Process Communication), **shared memory**, **POSIX semaphores**, **named pipes**, **message queues** and **POSIX threads**.
 
 ---
 
 ## 📖 Overview
 
-DEIChain simulates the core lifecycle of a blockchain — transaction creation, proof-of-work mining, and block validation — using real OS-level concurrency primitives. It is intentionally built without any high-level frameworks, relying entirely on Linux system calls to demonstrate how distributed systems manage shared state under concurrency.
+DEIChain simulates the core lifecycle of a blockchain: transaction creation, proof-of-work mining, and block validation. Using real OS-level concurrency primitives. It is intentionally built without any high-level frameworks, relying entirely on Linux system calls to demonstrate how distributed systems manage shared state under concurrency.
 
 ```text
   [Transaction Generator(s)]
@@ -34,9 +34,9 @@ DEIChain simulates the core lifecycle of a blockchain — transaction creation, 
 
 | Component | Type | Role |
 | --------- | ---- | ---- |
-| ⚙️ **Controller** | Process | Bootstraps the system, monitors pool occupancy, and dynamically scales Validators. |
-| ⛏️ **Miner** | Process + *N* threads | Each thread selects transactions, solves PoW, and sends blocks via named pipe. |
-| 🛡️ **Validator** | Process (1–3) | Validates PoW, chain continuity, and transaction availability, then updates the ledger. |
+| ⚙️ **Controller** | Process | Bootstraps the system, monitors pool occupancy and dynamically scales Validators. |
+| ⛏️ **Miner** | Process + *N* threads | Each thread selects transactions, solves PoW and sends blocks via named pipe. |
+| 🛡️ **Validator** | Process (1–3) | Validates PoW, chain continuity and transaction availability, then updates the ledger. |
 | 📊 **Statistics** | Process | Collects metrics via message queue and prints them on `SIGUSR1` or termination. | 
 | 💸 **TxGen** | Process | User-launched process that generates transactions and writes them to the pool. |
 
@@ -60,7 +60,7 @@ The Controller thread continuously monitors the transaction pool occupancy and s
 
 🔐 **Proof-of-Work & Aging Mechanism**  
 - **PoW:** SHA-256 (via OpenSSL) is used to hash each block. The miner increments a nonce until the hash begins with a number of leading zeros proportional to the maximum transaction reward in the block. The Validator independently recalculates and verifies this hash.
-- **Anti-Starvation (Aging):** Each time the Validator touches the transaction pool, it increments each pending transaction's `age` counter. Every 50 increments, a transaction's reward increases by 1 — ensuring low-reward transactions are eventually prioritised.
+- **Anti-Starvation (Aging):** Each time the Validator touches the transaction pool, it increments each pending transaction's `age` counter. Every 50 increments, a transaction's reward increases by 1, ensuring low-reward transactions are eventually prioritised.
 
 ---
 
@@ -154,7 +154,7 @@ deichain-blockchain-os/
 - **POSIX thread pools** with `pthread_create` and `pthread_join`.
 - **Race condition prevention** using `sem_wait` and `sem_post` across shared memory segments.
 - **Signal handling** (`sigaction`) for clean teardown and on-demand stats.
-- **Blockchain data integrity**: Chaining via `prev_hash`, PoW re-verification, and duplicate transaction detection.
+- **Blockchain data integrity**: Chaining via `prev_hash`, PoW re-verification and duplicate transaction detection.
 
 ---
 
