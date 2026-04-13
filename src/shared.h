@@ -21,7 +21,7 @@
 
 /*
  * System-Wide Constants
- * Maximum boundaries for blocks, transactions, and string buffers
+ * Maximum boundaries for blocks, transactions and string buffers
  * to ensure memory safety across shared segments.
  */
 #define MAX_TRANSACTIONS_PER_BLOCK 64
@@ -31,8 +31,8 @@
 
 /*
  * Core Data Structures
- * Definitions for Transactions, Blocks, and the Shared Memory layouts
- * (Transaction Pool, Blockchain Ledger, and System Configuration).
+ * Definitions for Transactions, Blocks and the Shared Memory layouts
+ * (Transaction Pool, Blockchain Ledger and System Configuration).
  * Note: Arrays defined without explicit sizes are flexible array members
  * allocated dynamically based on configuration limits.
  */
