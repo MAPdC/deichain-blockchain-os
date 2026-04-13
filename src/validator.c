@@ -42,7 +42,7 @@ static volatile sig_atomic_t g_stop = 0;
 /*
  * Shared Memory Accessors
  * Helper functions to map and attach to the configuration,
- * transaction pool, and blockchain ledger shared memory segments.
+ * transaction pool and blockchain ledger shared memory segments.
  */
 static Config *access_shared_config(const char *name) {
     int fd = shm_open(name, O_RDWR, 0666);
@@ -159,7 +159,7 @@ static void send_stats(const Block *block, int valid) {
 
 /*
  * Core Block Validation
- * Atomically validates PoW, chain continuity, and transaction availability.
+ * Atomically validates PoW, chain continuity and transaction availability.
  * Appends valid blocks to the ledger and purges processed transactions.
  */
 static void process_block(Block *block) {
@@ -173,7 +173,7 @@ static void process_block(Block *block) {
         return;
     }
 
-    /* 2. Chain continuity + append — held under ledger_sem to be atomic */
+    /* 2. Chain continuity + append */
     sem_wait(&ledger->ledger_sem);
 
     int last = find_last_valid_block_locked();
@@ -203,8 +203,7 @@ static void process_block(Block *block) {
         return;
     }
 
-    /* 3. Transactions still in pool? — check while ledger is locked so no
-     * other validator can slip in and remove them between our check and write. */
+    /* 3. Transactions still in pool? */
     sem_wait(&tx_pool->pool_sem);
 
     int tx_valid = 1;
@@ -229,7 +228,7 @@ static void process_block(Block *block) {
         return;
     }
 
-    /* All checks passed — commit atomically */
+    /* All checks passed */
     ledger->blocks[next_idx] = *block;
 
     /* Remove transactions from pool */
@@ -270,7 +269,7 @@ static void age_transactions(void) {
 
 /*
  * Resource Cleanup (Teardown)
- * Safely detaches shared memory segments, closes the named pipe,
+ * Safely detaches shared memory segments, closes the named pipe
  * and performs final teardown upon process termination.
  */
 static void cleanup(void) {
@@ -350,7 +349,7 @@ int main(void) {
             process_block(&block);
         } else if (n == 0) {
             /* Pipe write-end closed (miner exited) */
-            log_message("VALIDATOR", "Pipe fechado — terminando");
+            log_message("VALIDATOR", "Pipe closed, no more blocks to validate");
             break;
         } else if (n == -1) {
             if (errno == EINTR) {
